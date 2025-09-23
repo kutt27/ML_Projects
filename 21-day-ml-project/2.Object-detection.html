@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Object Detection</title>
+    <!-- Tailwind CSS for modern styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0d1117;
+            color: #c9d1d9;
+        }
+        .container {
+            max-width: 90%;
+            margin: auto;
+            padding: 2rem;
+        }
+        video, canvas {
+            max-width: 100%;
+            height: auto;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+        #status-message {
+            min-height: 2rem;
+            color: #58a6ff;
+        }
+        .detection-box {
+            position: absolute;
+            border: 2px solid #34d399;
+            box-shadow: 0 0 5px #34d399;
+            box-sizing: border-box;
+        }
+        .detection-label {
+            position: absolute;
+            background-color: #34d399;
+            color: #161b22;
+            padding: 2px 6px;
+            font-size: 0.75rem;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+        #results-container ul li {
+            padding: 0.5rem;
+            border-radius: 6px;
+            background-color: #161b22;
+            border: 1px solid #30363d;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-200 min-h-screen flex items-center justify-center">
+
+    <div class="container flex flex-col lg:flex-row gap-8 p-4 bg-gray-800 rounded-xl shadow-lg">
+
+        <div class="flex-1 flex flex-col items-center">
+            <h1 class="text-3xl font-bold mb-4 text-center">Real-Time Object Detection</h1>
+            <p id="status-message" class="text-center text-sm mb-4">Loading model...</p>
+
+            <div class="relative w-full aspect-video bg-gray-700 rounded-xl overflow-hidden">
+                <video id="webcam" class="w-full h-full object-cover hidden" playsinline autoplay muted></video>
+                <canvas id="detectionCanvas" class="absolute top-0 left-0 z-10 w-full h-full object-cover hidden"></canvas>
+                <div id="loading" class="flex flex-col items-center justify-center text-gray-400">
+                    <svg class="animate-spin h-10 w-10 text-white mb-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span>Please wait...</span>
+                </div>
+            </div>
+
+            <div class="mt-6 flex flex-col sm:flex-row gap-4 w-full justify-center">
+                <button id="startButton" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg shadow-md transition-colors duration-200 transform hover:scale-105 disabled:bg-gray-500 disabled:cursor-not-allowed">
+                    Start Detection
+                </button>
+                <button id="stopButton" class="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-lg shadow-md transition-colors duration-200 transform hover:scale-105 disabled:bg-gray-500 disabled:cursor-not-allowed" disabled>
+                    Stop Detection
+                </button>
+            </div>
+        </div>
+
+        <div id="results-container" class="flex-1 lg:max-h-[600px] overflow-y-auto mt-8 lg:mt-0 p-4 bg-gray-700 rounded-xl shadow-inner">
+            <h2 class="text-2xl font-semibold mb-4 text-center">Detected Objects</h2>
+            <ul id="detection-list" class="space-y-3">
+                <li class="p-3 text-center text-sm text-gray-400">No objects detected yet.</li>
+            </ul>
+        </div>
+
+    </div>
+
+    <!-- TensorFlow.js and COCO-SSD Model -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const video = document.getElementById('webcam');
+            const canvas = document.getElementById('detectionCanvas');
+            const context = canvas.getContext('2d');
+            const statusMessage = document.getElementById('status-message');
+            const loadingIndicator = document.getElementById('loading');
+            const startButton = document.getElementById('startButton');
+            const stopButton = document.getElementById('stopButton');
+            const detectionList = document.getElementById('detection-list');
+
+            let model = null;
+            let isRunning = false;
+            let stream = null;
+            let animationFrameId = null;
+
+            // Load the COCO-SSD model.
+            async function loadModel() {
+                try {
+                    statusMessage.textContent = 'Loading model, please wait...';
+                    model = await cocoSsd.load();
+                    statusMessage.textContent = 'Model loaded successfully! Click "Start Detection" to begin.';
+                    startButton.disabled = false;
+                    loadingIndicator.classList.add('hidden');
+                } catch (error) {
+                    console.error('Failed to load the model:', error);
+                    statusMessage.textContent = 'Error: Failed to load the model.';
+                }
+            }
+
+            // Function to start the webcam and detection
+            async function startDetection() {
+                if (isRunning) return;
+
+                startButton.disabled = true;
+                stopButton.disabled = false;
+                isRunning = true;
+                
+                try {
+                    statusMessage.textContent = 'Accessing webcam...';
+                    stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    video.srcObject = stream;
+                    video.classList.remove('hidden');
+                    canvas.classList.remove('hidden');
+
+                    video.addEventListener('loadeddata', () => {
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        statusMessage.textContent = 'Detection started. Look at your camera!';
+                        detectFrame();
+                    }, { once: true });
+
+                } catch (error) {
+                    console.error('Webcam access denied:', error);
+                    statusMessage.textContent = 'Error: Webcam access denied. Please allow access to use this app.';
+                    isRunning = false;
+                    startButton.disabled = false;
+                    stopButton.disabled = true;
+                }
+            }
+
+            // Main detection loop
+            function detectFrame() {
+                if (!isRunning || !model) {
+                    return;
+                }
+
+                // Make predictions
+                model.detect(video).then(predictions => {
+                    drawPredictions(predictions);
+                    updateResultsList(predictions);
+                    // Continue the loop
+                    animationFrameId = requestAnimationFrame(detectFrame);
+                }).catch(error => {
+                    console.error('Prediction error:', error);
+                    statusMessage.textContent = 'Error during detection. Stopping...';
+                    stopDetection();
+                });
+            }
+
+            // Draw bounding boxes and labels on the canvas
+            function drawPredictions(predictions) {
+                // Clear the canvas first
+                context.clearRect(0, 0, canvas.width, canvas.height);
+
+                // Draw the video frame to the canvas
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+                predictions.forEach(prediction => {
+                    const [x, y, width, height] = prediction.bbox;
+                    const className = prediction.class;
+                    const score = Math.round(prediction.score * 100);
+
+                    // Draw the bounding box
+                    context.beginPath();
+                    context.rect(x, y, width, height);
+                    context.lineWidth = 2;
+                    context.strokeStyle = '#34d399';
+                    context.fillStyle = 'rgba(52, 211, 153, 0.1)';
+                    context.stroke();
+                    context.fillRect(x, y, width, height);
+
+                    // Draw the label
+                    context.fillStyle = '#34d399';
+                    context.font = 'bold 16px Inter';
+                    const text = `${className} (${score}%)`;
+                    const textWidth = context.measureText(text).width;
+                    context.fillRect(x - 1, y > 16 ? y - 16 : y, textWidth + 10, 16);
+                    
+                    context.fillStyle = '#161b22';
+                    context.fillText(text, x + 4, y > 16 ? y - 4 : y + 12);
+                });
+            }
+
+            // Update the HTML list with detected objects
+            function updateResultsList(predictions) {
+                if (predictions.length === 0) {
+                    detectionList.innerHTML = '<li class="p-3 text-center text-sm text-gray-400">No objects detected yet.</li>';
+                    return;
+                }
+
+                detectionList.innerHTML = predictions.map(prediction => {
+                    const score = Math.round(prediction.score * 100);
+                    return `<li class="p-3 bg-gray-700 rounded-lg border border-gray-600 flex justify-between items-center text-lg">
+                                <span class="font-medium">${prediction.class}</span>
+                                <span class="text-sm text-gray-400">${score}% confidence</span>
+                            </li>`;
+                }).join('');
+            }
+
+            // Function to stop the detection
+            function stopDetection() {
+                if (!isRunning) return;
+                
+                isRunning = false;
+                startButton.disabled = false;
+                stopButton.disabled = true;
+                
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                }
+
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                    video.srcObject = null;
+                }
+
+                context.clearRect(0, 0, canvas.width, canvas.height);
+                video.classList.add('hidden');
+                canvas.classList.add('hidden');
+                statusMessage.textContent = 'Detection stopped.';
+                detectionList.innerHTML = '<li class="p-3 text-center text-sm text-gray-400">No objects detected yet.</li>';
+            }
+
+            // Add event listeners for buttons
+            startButton.addEventListener('click', startDetection);
+            stopButton.addEventListener('click', stopDetection);
+
+            // Initial model load
+            loadModel();
+        });
+    </script>
+
+</body>
+</html>
